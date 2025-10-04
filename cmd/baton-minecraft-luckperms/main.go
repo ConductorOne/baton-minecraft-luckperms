@@ -49,15 +49,15 @@ func getConnector[T field.Configurable](ctx context.Context, config *cfg.Minecra
 		return nil, err
 	}
 
-	cb, err := connector.New(ctx)
+	cb, err := connector.New(ctx, config)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
 	}
-	connector, err := connectorbuilder.NewConnector(ctx, cb)
+	c, err := connectorbuilder.NewConnector(ctx, cb)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
 	}
-	return connector, nil
+	return c, nil
 }
