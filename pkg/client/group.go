@@ -10,23 +10,23 @@ import (
 )
 
 type ContextItem struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 type Node struct {
-	Key     string `json:"key"`
-	Type    string `json:"type"`
-	Value   bool   `json:"value"`
-	Expires int64  `json:"expires"`
-	//Context []map[string]string `json:"context"`
+	Key     string `json:"key,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Value   bool   `json:"value,omitempty"`
+	Expires int64  `json:"expires,omitempty"`
+	//Context []map[string]string `json:"context,omitempty"`
 }
 
 type Group struct {
-	Name        string         `json:"name"`
-	DisplayName string         `json:"displayName"`
-	Nodes       []*Node        `json:"nodes"`
-	Metadata    map[string]any `json:"metadata"`
+	Name        string         `json:"name,omitempty"`
+	DisplayName string         `json:"displayName,omitempty"`
+	Nodes       []*Node        `json:"nodes,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 func (o *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
@@ -91,7 +91,6 @@ func (o *Client) ListAllGroups(ctx context.Context) ([]*Group, error) {
 func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID string, expires *time.Time) (*User, error) {
 	node := Node{
 		Key:   fmt.Sprintf("group.%s", groupID),
-		Type:  "inheritance",
 		Value: true,
 	}
 	if expires != nil {
@@ -114,8 +113,7 @@ func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID stri
 func (o *Client) RemoveUserFromGroup(ctx context.Context, userID string, groupID string, expires *time.Time) (*User, error) {
 	node := Node{
 		Key:   fmt.Sprintf("group.%s", groupID),
-		Type:  "inheritance",
-		Value: true,
+		Value: false,
 	}
 	if expires != nil {
 		node.Expires = expires.Unix()
