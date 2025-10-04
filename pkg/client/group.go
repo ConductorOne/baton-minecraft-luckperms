@@ -98,7 +98,7 @@ func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID stri
 		node.Expires = expires.Unix()
 	}
 
-	body, err := json.Marshal(node)
+	body, err := json.Marshal([]*Node{&node})
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (o *Client) RemoveUserFromGroup(ctx context.Context, userID string, groupID
 		node.Expires = expires.Unix()
 	}
 
-	body, err := json.Marshal(node)
+	body, err := json.Marshal([]*Node{&node})
 	if err != nil {
 		return nil, err
 	}
