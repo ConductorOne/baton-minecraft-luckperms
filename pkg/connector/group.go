@@ -2,12 +2,15 @@ package connector
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/conductorone/baton-minecraft-luckperms/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	resourceSdk "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -69,7 +72,22 @@ func (o *groupBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ 
 
 // Grants always returns an empty slice for users since they don't have any entitlements.
 func (o *groupBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+	usersInGroup, err := o.client.ListAllUsersInGroup(ctx, resource.Id.Resource)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	grants := make([]*v2.Grant, 0, len(usersInGroup))
+	for _, user := range usersInGroup {
+		principalId, err := resourceSdk.NewResourceID(userResourceType, user.UniqueID)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		grant := grant.NewGrant(resource, "member", principalId)
+		grants = append(grants, grant)
+	}
+
+	return grants, "", nil, nil
 }
 
 func newGroupBuilder(baseURL string, client *client.Client) *groupBuilder {
@@ -77,4 +95,43 @@ func newGroupBuilder(baseURL string, client *client.Client) *groupBuilder {
 		baseURL: baseURL,
 		client:  client,
 	}
+}
+
+func (o *groupBuilder) Grant(
+	ctx context.Context,
+	principal *v2.Resource,
+	entitlement *v2.Entitlement,
+) (
+	annotations.Annotations,
+	error,
+) {
+	user, err := o.client.AddUserToGroup(ctx, principal.Id.Resource, entitlement.Resource.Id.Resource, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	groupKey := fmt.Sprintf("group.%s", principal.Id.Resource)
+	for _, node := range user.Nodes {
+		if node.Key == groupKey {
+			return nil, nil
+		}
+	}
+
+	return nil, errors.New("could not find added node on the user")
+}
+
+func (o *groupBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
+	user, err := o.client.RemoveUserFromGroup(ctx, grant.Principal.Id.Resource, grant.Entitlement.Resource.Id.Resource, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	groupKey := fmt.Sprintf("group.%s", grant.Principal.Id.Resource)
+	for _, node := range user.Nodes {
+		if node.Key == groupKey {
+			return nil, errors.New("could not remove node from the user")
+		}
+	}
+
+	return nil, nil
 }

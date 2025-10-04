@@ -7,20 +7,28 @@ import (
 var (
 	// Add the SchemaFields for the Config.
 	configField         = field.StringField("configField")
-	ConfigurationFields = []field.SchemaField{configField, Address, Port}
+	ConfigurationFields = []field.SchemaField{configField, Address, Port, AuthToken}
 
 	Address = field.StringField(
 		"address",
 		field.WithDisplayName("Address"),
 		field.WithIsSecret(false),
-		field.WithDescription("The URL of the LuckPerms REST endpoint."),
+		field.WithDescription("The URL of the LuckPerms REST api."),
 		field.WithRequired(true),
 	)
 	Port = field.StringField(
 		"port",
 		field.WithDisplayName("Port"),
 		field.WithIsSecret(false),
-		field.WithDescription("The Port of the LuckPerms REST endpoint."),
+		field.WithDescription("The Port of the LuckPerms REST api."),
+		field.WithRequired(true),
+	)
+
+	AuthToken = field.StringField(
+		"auth-token",
+		field.WithDisplayName("Auth Token"),
+		field.WithIsSecret(true),
+		field.WithDescription("The AuthToken for the LuckPerms REST api."),
 		field.WithRequired(true),
 	)
 
@@ -33,6 +41,7 @@ var (
 			Fields: []field.SchemaField{
 				Address,
 				Port,
+				AuthToken,
 			},
 		},
 	}

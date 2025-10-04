@@ -1,11 +1,12 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
+	"time"
 )
 
 type ContextItem struct {
@@ -14,9 +15,10 @@ type ContextItem struct {
 }
 
 type Node struct {
-	Key   string `json:"key"`
-	Type  string `json:"type"`
-	Value bool   `json:"value"`
+	Key     string `json:"key"`
+	Type    string `json:"type"`
+	Value   bool   `json:"value"`
+	Expires int64  `json:"expires"`
 	//Context []map[string]string `json:"context"`
 }
 
@@ -28,19 +30,11 @@ type Group struct {
 }
 
 func (o *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
-	req, err := o.client.NewRequest(ctx, "GET", &url.URL{
-		Path:   fmt.Sprintf("group/%s", id),
-		Host:   o.baseURL,
-		Scheme: "http",
-	})
+	resp, err := o.do(ctx, "GET", fmt.Sprintf("group/%s", id), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		if err := resp.Body.Close(); err != nil {
@@ -66,18 +60,11 @@ func (o *Client) GetGroup(ctx context.Context, id string) (*Group, error) {
 }
 
 func (o *Client) ListAllGroups(ctx context.Context) ([]*Group, error) {
-	req, err := o.client.NewRequest(ctx, "GET", &url.URL{
-		Path:   "group",
-		Host:   o.baseURL,
-		Scheme: "http",
-	})
+	resp, err := o.do(ctx, "GET", "group", nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
+
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -99,4 +86,49 @@ func (o *Client) ListAllGroups(ctx context.Context) ([]*Group, error) {
 		resources = append(resources, g)
 	}
 	return resources, nil
+}
+
+func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID string, expires *time.Time) (*User, error) {
+	node := Node{
+		Key:   fmt.Sprintf("group.%s", groupID),
+		Type:  "inheritance",
+		Value: true,
+	}
+	if expires != nil {
+		node.Expires = expires.Unix()
+	}
+
+	body, err := json.Marshal(node)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = o.do(ctx, "POST", fmt.Sprintf("user/%s/nodes?temporaryNodeMergeStrategy=replace_existing_if_duration_longer", userID), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	return o.GetUser(ctx, userID)
+}
+
+func (o *Client) RemoveUserFromGroup(ctx context.Context, userID string, groupID string, expires *time.Time) (*User, error) {
+	node := Node{
+		Key:   fmt.Sprintf("group.%s", groupID),
+		Type:  "inheritance",
+		Value: true,
+	}
+	if expires != nil {
+		node.Expires = expires.Unix()
+	}
+
+	body, err := json.Marshal(node)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = o.do(ctx, "DELETE", fmt.Sprintf("user/%s/nodes", userID), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	return o.GetUser(ctx, userID)
 }

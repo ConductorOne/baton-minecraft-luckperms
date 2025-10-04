@@ -14,13 +14,14 @@ import (
 )
 
 type Connector struct {
-	baseUrl string
-	client  *uhttp.BaseHttpClient
+	baseUrl   string
+	client    *uhttp.BaseHttpClient
+	authToken string
 }
 
 // ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
-	client := client.NewClient(d.client, d.baseUrl)
+	client := client.NewClient(d.client, d.baseUrl, d.authToken)
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.baseUrl, client),
 		newGroupBuilder(d.baseUrl, client),

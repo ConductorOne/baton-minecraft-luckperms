@@ -7,6 +7,7 @@ type MinecraftLuckperms struct {
 	Configfield string `mapstructure:"configField"`
 	Address     string `mapstructure:"address"`
 	Port        string `mapstructure:"port"`
+	AuthToken   string `mapstructure:"auth-token"`
 }
 
 func (c *MinecraftLuckperms) findFieldByTag(tagValue string) (any, bool) {
