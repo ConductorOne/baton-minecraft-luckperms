@@ -72,7 +72,8 @@ func New(ctx context.Context, cfg *cfg.MinecraftLuckperms) (*Connector, error) {
 	}
 
 	return &Connector{
-		client:  wrapper,
-		baseUrl: baseUrl,
+		client:    wrapper,
+		baseUrl:   baseUrl,
+		authToken: cfg.AuthToken,
 	}, nil
 }
