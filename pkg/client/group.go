@@ -98,7 +98,7 @@ func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID stri
 		node.Expires = expires.Unix()
 	}
 
-	body, err := json.Marshal([]*Node{&node})
+	body, err := json.Marshal(node)
 	if err != nil {
 		return nil, err
 	}
