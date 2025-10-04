@@ -24,12 +24,16 @@ func NewClient(client *uhttp.BaseHttpClient, baseURL string, authToken string) *
 }
 
 func (c *Client) do(ctx context.Context, method, pathAndQuery string, body io.Reader) (*http.Response, error) {
-	url := &url.URL{
+	fullUrl := &url.URL{
 		Path:   pathAndQuery,
 		Host:   c.baseURL,
 		Scheme: "http",
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url.String(), body)
+	parsedUrl, err := url.QueryUnescape(fullUrl.String())
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, parsedUrl, body)
 	if err != nil {
 		return nil, err
 	}
