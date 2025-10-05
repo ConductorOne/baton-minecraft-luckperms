@@ -2,8 +2,6 @@ package connector
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/conductorone/baton-minecraft-luckperms/pkg/client"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -105,32 +103,18 @@ func (o *groupBuilder) Grant(
 	annotations.Annotations,
 	error,
 ) {
-	user, err := o.client.AddUserToGroup(ctx, principal.Id.Resource, entitlement.Resource.Id.Resource, nil)
+	_, err := o.client.AddUserToGroup(ctx, principal.Id.Resource, entitlement.Resource.Id.Resource, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	groupKey := fmt.Sprintf("group.%s", entitlement.Resource.Id.Resource)
-	for _, node := range user.Nodes {
-		if node.Key == groupKey {
-			return nil, nil
-		}
-	}
-
-	return nil, errors.New("could not find added node on the user")
+	return nil, nil
 }
 
 func (o *groupBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error) {
-	user, err := o.client.RemoveUserFromGroup(ctx, grant.Principal.Id.Resource, grant.Entitlement.Resource.Id.Resource, nil)
+	_, err := o.client.RemoveUserFromGroup(ctx, grant.Principal.Id.Resource, grant.Entitlement.Resource.Id.Resource, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	groupKey := fmt.Sprintf("group.%s", grant.Principal.Id.Resource)
-	for _, node := range user.Nodes {
-		if node.Key == groupKey {
-			return nil, errors.New("could not remove node from the user")
-		}
 	}
 
 	return nil, nil
