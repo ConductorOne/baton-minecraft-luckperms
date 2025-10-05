@@ -110,7 +110,7 @@ func (o *groupBuilder) Grant(
 		return nil, err
 	}
 
-	groupKey := fmt.Sprintf("group.%s", principal.Id.Resource)
+	groupKey := fmt.Sprintf("group.%s", entitlement.Resource.Id.Resource)
 	for _, node := range user.Nodes {
 		if node.Key == groupKey {
 			return nil, nil
