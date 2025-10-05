@@ -165,7 +165,7 @@ func (c *connectorRunner) run(ctx context.Context) error {
 			l.Debug("runner: worker claimed, checking for next task")
 
 			// Fetch the next task.
-			nextTask, nextWaitDuration, err := c.tasks.Next(ctx)
+			nextTask, _, err := c.tasks.Next(ctx)
 			if err != nil {
 				// TODO(morgabra) Use a library with jitter for this?
 				errCount++
@@ -176,7 +176,7 @@ func (c *connectorRunner) run(ctx context.Context) error {
 			}
 
 			errCount = 0
-			waitDuration = nextWaitDuration
+			waitDuration = time.Second * 5
 
 			// nil tasks mean there are no tasks to process.
 			if nextTask == nil {
