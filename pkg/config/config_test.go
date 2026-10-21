@@ -14,9 +14,11 @@ func TestValidateConfig(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:   "valid config",
+			name: "valid config",
 			config: &MinecraftLuckperms{
-				// TODO: Add minimal valid configuration here once Config type is generated
+				Address:   "localhost",
+				Port:      "8080",
+				AuthToken: "token",
 			},
 			wantErr: false,
 		},

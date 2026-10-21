@@ -35,7 +35,7 @@ func (o *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination
 			data[node.Key] = map[string]any{
 				"value": node.Value,
 				"type":  node.Type,
-				//"context": node.Context,
+				// "context": node.Context,
 			}
 		}
 		data["metadata"] = group.Metadata
