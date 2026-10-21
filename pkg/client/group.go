@@ -19,7 +19,7 @@ type Node struct {
 	Type    string `json:"type,omitempty"`
 	Value   bool   `json:"value,omitempty"`
 	Expires int64  `json:"expires,omitempty"`
-	//Context []map[string]string `json:"context,omitempty"`
+	// Context []map[string]string `json:"context,omitempty"`
 }
 
 type Group struct {
@@ -102,10 +102,11 @@ func (o *Client) AddUserToGroup(ctx context.Context, userID string, groupID stri
 		return nil, err
 	}
 
-	_, err = o.do(ctx, "POST", fmt.Sprintf("user/%s/nodes?temporaryNodeMergeStrategy=replace_existing_if_duration_longer", userID), bytes.NewReader(body))
+	resp, err := o.do(ctx, "POST", fmt.Sprintf("user/%s/nodes?temporaryNodeMergeStrategy=replace_existing_if_duration_longer", userID), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+	_ = resp.Body.Close()
 
 	return o.GetUser(ctx, userID)
 }
@@ -124,9 +125,10 @@ func (o *Client) RemoveUserFromGroup(ctx context.Context, userID string, groupID
 		return nil, err
 	}
 
-	_, err = o.do(ctx, "DELETE", fmt.Sprintf("user/%s/nodes", userID), bytes.NewReader(body))
+	resp, err := o.do(ctx, "DELETE", fmt.Sprintf("user/%s/nodes", userID), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+	_ = resp.Body.Close()
 	return o.GetUser(ctx, userID)
 }

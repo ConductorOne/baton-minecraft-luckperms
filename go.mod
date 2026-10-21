@@ -1,6 +1,6 @@
 module github.com/conductorone/baton-minecraft-luckperms
 
-go 1.25
+go 1.27.3
 
 require (
 	github.com/conductorone/baton-sdk v0.4.8
