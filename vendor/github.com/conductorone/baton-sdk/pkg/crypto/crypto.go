@@ -1,4 +1,4 @@
-package crypto
+package crypto //nolint:revive,nolintlint // we can't change the package name for backwards compatibility
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/crypto/providers"
+	"github.com/conductorone/baton-sdk/pkg/crypto/providers/jwe"
 	"github.com/conductorone/baton-sdk/pkg/crypto/providers/jwk"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -39,7 +40,7 @@ func (pkem *EncryptionManager) Encrypt(ctx context.Context, cred *v2.PlaintextDa
 	encryptedDatas := make([]*v2.EncryptedData, 0, len(pkem.configs))
 
 	for _, config := range pkem.configs {
-		provider, err := providers.GetEncryptionProviderForConfig(ctx, config)
+		provider, err := providers.GetEncryptorForConfig(ctx, config)
 		if err != nil {
 			return nil, err
 		}
@@ -62,6 +63,47 @@ func NewEncryptionManager(co *v2.CredentialOptions, ec []*v2.EncryptionConfig) (
 	return em, nil
 }
 
+// ValidateEncryptionConfigs checks that every supplied encryption config names a
+// recipient that can be encrypted to. IssueCredential calls it before the
+// connector mints, because issuance always returns a plaintext value to encrypt.
+// CreateAccount and RotateCredential call it only when the connector returned at
+// least one plaintext value, so a zero-output operation is not failed by a config
+// it never uses. An empty list is valid; a nil entry, an unknown provider, or a
+// config the provider rejects is not.
+func ValidateEncryptionConfigs(ec []*v2.EncryptionConfig) error {
+	for i, config := range ec {
+		if config == nil {
+			return status.Errorf(codes.InvalidArgument, "encryption config %d is empty", i)
+		}
+		provider, err := providers.GetEncryptorForConfig(context.Background(), config)
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "invalid encryption config %d: %v", i, err)
+		}
+		if _, ok := provider.(*jwe.Provider); ok && len(ec) != 1 {
+			return status.Error(codes.InvalidArgument, "JWE credential issuance requires exactly one encryption config")
+		}
+		if validator, ok := provider.(providers.EncryptionConfigValidator); ok {
+			if err := validator.ValidateConfig(context.Background(), config); err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid encryption config %d: %v", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+func ValidateCredentialOutputCardinality(ec []*v2.EncryptionConfig, count int) error {
+	for _, config := range ec {
+		provider, err := providers.GetEncryptorForConfig(context.Background(), config)
+		if err != nil {
+			return err
+		}
+		if _, ok := provider.(*jwe.Provider); ok && count != 1 {
+			return status.Error(codes.Internal, "JWE issuance returned an unexpected value count; reconcile the issued credential without retrying issuance")
+		}
+	}
+	return nil
+}
+
 func decryptPassword(ctx context.Context, encryptedPassword *v2.EncryptedData, decryptionConfig *providers.DecryptionConfig) (string, error) {
 	if decryptionConfig == nil {
 		return "", ErrInvalidCredentialOptions
@@ -81,7 +123,7 @@ func decryptPassword(ctx context.Context, encryptedPassword *v2.EncryptedData, d
 		return "", status.Errorf(codes.Internal, "error decrypting password: %v", err)
 	}
 
-	return string(plaintext.Bytes), nil
+	return string(plaintext.GetBytes()), nil
 }
 
 func ConvertCredentialOptions(ctx context.Context, clientSecret *jose.JSONWebKey, opts *v2.CredentialOptions, encryptionConfigs []*v2.EncryptionConfig) (*v2.LocalCredentialOptions, error) {
@@ -90,29 +132,23 @@ func ConvertCredentialOptions(ctx context.Context, clientSecret *jose.JSONWebKey
 		return nil, nil
 	}
 
-	localOpts := &v2.LocalCredentialOptions{
-		ForceChangeAtNextLogin: opts.ForceChangeAtNextLogin,
-	}
+	localOpts := v2.LocalCredentialOptions_builder{
+		ForceChangeAtNextLogin: opts.GetForceChangeAtNextLogin(),
+	}.Build()
 
-	switch opts.Options.(type) {
-	case *v2.CredentialOptions_RandomPassword_:
-		localOpts.Options = &v2.LocalCredentialOptions_RandomPassword_{
-			RandomPassword: &v2.LocalCredentialOptions_RandomPassword{
-				Length:      opts.GetRandomPassword().GetLength(),
-				Constraints: opts.GetRandomPassword().GetConstraints(),
-			},
-		}
-	case *v2.CredentialOptions_NoPassword_:
-		localOpts.Options = &v2.LocalCredentialOptions_NoPassword_{
-			NoPassword: &v2.LocalCredentialOptions_NoPassword{},
-		}
-	case *v2.CredentialOptions_Sso:
-		localOpts.Options = &v2.LocalCredentialOptions_Sso{
-			Sso: &v2.LocalCredentialOptions_SSO{
-				SsoProvider: opts.GetSso().GetSsoProvider(),
-			},
-		}
-	case *v2.CredentialOptions_EncryptedPassword_:
+	switch opts.WhichOptions() {
+	case v2.CredentialOptions_RandomPassword_case:
+		localOpts.SetRandomPassword(v2.LocalCredentialOptions_RandomPassword_builder{
+			Length:      opts.GetRandomPassword().GetLength(),
+			Constraints: opts.GetRandomPassword().GetConstraints(),
+		}.Build())
+	case v2.CredentialOptions_NoPassword_case:
+		localOpts.SetNoPassword(&v2.LocalCredentialOptions_NoPassword{})
+	case v2.CredentialOptions_Sso_case:
+		localOpts.SetSso(v2.LocalCredentialOptions_SSO_builder{
+			SsoProvider: opts.GetSso().GetSsoProvider(),
+		}.Build())
+	case v2.CredentialOptions_EncryptedPassword_case:
 	default:
 		return nil, status.Error(codes.InvalidArgument, "invalid credential options")
 	}
@@ -153,19 +189,17 @@ func ConvertCredentialOptions(ctx context.Context, clientSecret *jose.JSONWebKey
 			if err != nil {
 				return nil, fmt.Errorf("convert-credential-options: error decrypting password: %w", err)
 			}
-			localOpts.Options = &v2.LocalCredentialOptions_PlaintextPassword_{
-				PlaintextPassword: &v2.LocalCredentialOptions_PlaintextPassword{
-					PlaintextPassword: password,
-				},
-			}
+			localOpts.SetPlaintextPassword(v2.LocalCredentialOptions_PlaintextPassword_builder{
+				PlaintextPassword: password,
+			}.Build())
 			break
 		}
-		if localOpts.Options != nil {
+		if localOpts.HasOptions() {
 			break
 		}
 	}
 
-	if localOpts.Options == nil {
+	if !localOpts.HasOptions() {
 		return nil, status.Errorf(codes.InvalidArgument, "no encrypted password matched client secret key id %q", clientSecret.KeyID)
 	}
 
