@@ -2,8 +2,14 @@ package dotc1z
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+
+	reader_v2 "github.com/conductorone/baton-sdk/pb/c1/reader/v2"
+	"github.com/conductorone/baton-sdk/pkg/connectorstore"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
+	"github.com/doug-martin/goqu/v9"
 )
 
 type C1FileAttached struct {
@@ -11,15 +17,16 @@ type C1FileAttached struct {
 	file *C1File
 }
 
-func (c *C1FileAttached) CompactTable(ctx context.Context, destSyncID string, baseSyncID string, appliedSyncID string, tableName string) error {
+func (c *C1FileAttached) CompactTable(ctx context.Context, baseSyncID string, appliedSyncID string, tableName string) error {
 	if !c.safe {
 		return errors.New("database has been detached")
 	}
 	ctx, span := tracer.Start(ctx, "C1FileAttached.CompactTable")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	// Get the column structure for this table by querying the schema
-	columns, err := c.getTableColumns(ctx, tableName)
+	columns, err := c.getTableColumns(ctx, c.file.rawDb, tableName)
 	if err != nil {
 		return fmt.Errorf("failed to get table columns: %w", err)
 	}
@@ -32,28 +39,16 @@ func (c *C1FileAttached) CompactTable(ctx context.Context, destSyncID string, ba
 			columnList += ", "
 			selectList += ", "
 		}
-		columnList += col
-		if col == "sync_id" {
-			selectList += "? as sync_id"
+		qcol := quoteIdentifier(col)
+		columnList += qcol
+		if col == "sync_id" { //nolint:goconst,nolintlint // ...
+			selectList += "? as " + qcol //nolint:goconst,nolintlint // ...
 		} else {
-			selectList += col
+			selectList += qcol
 		}
 	}
 
-	// Step 1: Insert ALL records from base sync
-	insertBaseQuery := fmt.Sprintf(`
-		INSERT INTO main.%s (%s)
-		SELECT %s
-		FROM base.%s
-		WHERE sync_id = ?
-	`, tableName, columnList, selectList, tableName)
-
-	_, err = c.file.db.ExecContext(ctx, insertBaseQuery, destSyncID, baseSyncID)
-	if err != nil {
-		return fmt.Errorf("failed to copy base records: %w", err)
-	}
-
-	// Step 2: Insert/replace records from applied sync where applied.discovered_at > main.discovered_at
+	// Insert/replace records from applied sync where applied.discovered_at > main.discovered_at
 	insertOrReplaceAppliedQuery := fmt.Sprintf(`
 		INSERT OR REPLACE INTO main.%s (%s)
 		SELECT %s
@@ -73,17 +68,22 @@ func (c *C1FileAttached) CompactTable(ctx context.Context, destSyncID string, ba
 		  )
 	`, tableName, columnList, selectList, tableName, tableName, tableName)
 
-	_, err = c.file.db.ExecContext(ctx, insertOrReplaceAppliedQuery, destSyncID, appliedSyncID, destSyncID, destSyncID)
+	_, err = c.file.db.ExecContext(ctx, insertOrReplaceAppliedQuery, baseSyncID, appliedSyncID, baseSyncID, baseSyncID)
 	return err
 }
 
-func (c *C1FileAttached) getTableColumns(ctx context.Context, tableName string) ([]string, error) {
+// sqlQuerier is satisfied by both *sql.DB and *sql.Tx.
+type sqlQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (c *C1FileAttached) getTableColumns(ctx context.Context, q sqlQuerier, tableName string) ([]string, error) {
 	if !c.safe {
 		return nil, errors.New("database has been detached")
 	}
 	// PRAGMA doesn't support parameter binding, so we format the table name directly
 	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
-	rows, err := c.file.db.QueryContext(ctx, query)
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func (c *C1FileAttached) getTableColumns(ctx context.Context, tableName string) 
 		var cid int
 		var name, dataType string
 		var notNull, pk int
-		var defaultValue interface{}
+		var defaultValue any
 
 		err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk)
 		if err != nil {
@@ -103,6 +103,9 @@ func (c *C1FileAttached) getTableColumns(ctx context.Context, tableName string) 
 
 		// Skip the 'id' column as it's auto-increment
 		if name != "id" {
+			if err := validateColumnName(name); err != nil {
+				return nil, err
+			}
 			columns = append(columns, name)
 		}
 	}
@@ -113,30 +116,73 @@ func (c *C1FileAttached) getTableColumns(ctx context.Context, tableName string) 
 	return columns, nil
 }
 
-func (c *C1FileAttached) CompactResourceTypes(ctx context.Context, destSyncID string, baseSyncID string, appliedSyncID string) error {
+func (c *C1FileAttached) CompactResourceTypes(ctx context.Context, baseSyncID string, appliedSyncID string) error {
 	if !c.safe {
 		return errors.New("database has been detached")
 	}
-	return c.CompactTable(ctx, destSyncID, baseSyncID, appliedSyncID, "v1_resource_types")
+	return c.CompactTable(ctx, baseSyncID, appliedSyncID, "v1_resource_types")
 }
 
-func (c *C1FileAttached) CompactResources(ctx context.Context, destSyncID string, baseSyncID string, appliedSyncID string) error {
+func (c *C1FileAttached) CompactResources(ctx context.Context, baseSyncID string, appliedSyncID string) error {
 	if !c.safe {
 		return errors.New("database has been detached")
 	}
-	return c.CompactTable(ctx, destSyncID, baseSyncID, appliedSyncID, "v1_resources")
+	return c.CompactTable(ctx, baseSyncID, appliedSyncID, "v1_resources")
 }
 
-func (c *C1FileAttached) CompactEntitlements(ctx context.Context, destSyncID string, baseSyncID string, appliedSyncID string) error {
+func (c *C1FileAttached) CompactEntitlements(ctx context.Context, baseSyncID string, appliedSyncID string) error {
 	if !c.safe {
 		return errors.New("database has been detached")
 	}
-	return c.CompactTable(ctx, destSyncID, baseSyncID, appliedSyncID, "v1_entitlements")
+	return c.CompactTable(ctx, baseSyncID, appliedSyncID, "v1_entitlements")
 }
 
-func (c *C1FileAttached) CompactGrants(ctx context.Context, destSyncID string, baseSyncID string, appliedSyncID string) error {
+func (c *C1FileAttached) CompactGrants(ctx context.Context, baseSyncID string, appliedSyncID string) error {
 	if !c.safe {
 		return errors.New("database has been detached")
 	}
-	return c.CompactTable(ctx, destSyncID, baseSyncID, appliedSyncID, "v1_grants")
+	return c.CompactTable(ctx, baseSyncID, appliedSyncID, "v1_grants")
+}
+
+func unionSyncTypes(a, b connectorstore.SyncType) connectorstore.SyncType {
+	switch {
+	case a == connectorstore.SyncTypeFull || b == connectorstore.SyncTypeFull:
+		return connectorstore.SyncTypeFull
+	case a == connectorstore.SyncTypeResourcesOnly || b == connectorstore.SyncTypeResourcesOnly:
+		return connectorstore.SyncTypeResourcesOnly
+	default:
+		return connectorstore.SyncTypePartial
+	}
+}
+
+func (c *C1FileAttached) UpdateSync(ctx context.Context, baseSync *reader_v2.SyncRun, appliedSync *reader_v2.SyncRun) error {
+	if !c.safe {
+		return errors.New("database has been detached")
+	}
+	syncType := unionSyncTypes(connectorstore.SyncType(baseSync.GetSyncType()), connectorstore.SyncType(appliedSync.GetSyncType()))
+
+	latestEndedAt := baseSync.GetEndedAt().AsTime()
+	if appliedSync.GetEndedAt().AsTime().After(latestEndedAt) {
+		latestEndedAt = appliedSync.GetEndedAt().AsTime()
+	}
+
+	baseSyncID := baseSync.GetId()
+	q := c.file.db.Update(fmt.Sprintf("main.%s", syncRuns.Name()))
+	q = q.Set(goqu.Record{
+		"ended_at":  latestEndedAt.Format(sqliteTimeFormat),
+		"sync_type": string(syncType),
+	})
+	q = q.Where(goqu.C("sync_id").Eq(baseSyncID))
+
+	query, args, err := q.ToSQL()
+	if err != nil {
+		return fmt.Errorf("failed to build update sync query: %w", err)
+	}
+
+	_, err = c.file.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update sync %s to type %s: %w", baseSyncID, syncType, err)
+	}
+
+	return nil
 }

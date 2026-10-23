@@ -3,7 +3,6 @@ package ugrpc
 import (
 	"context"
 
-	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpc_ctxtags "github.com/grpc-ecosystem/go-grpc-middleware/tags"
@@ -29,71 +28,15 @@ func ChainUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) grpc.Un
 	}
 }
 
-/*
-SessionCacheUnaryInterceptor creates a unary interceptor that:
-1. Propagates the session cache from the server context to the handler context.
-2. Extracts annotations from requests and adds syncID to context (for the session manager).
-*/
-func SessionCacheUnaryInterceptor(serverCtx context.Context) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		// Propagate session cache from server context to handler context
-		ctx = ContextWithSyncID(ctx, req)
-
-		if sessionCache, ok := serverCtx.Value(types.SessionCacheKey{}).(types.SessionCache); ok {
-			ctx = context.WithValue(ctx, types.SessionCacheKey{}, sessionCache)
-		}
-
-		return handler(ctx, req)
-	}
-}
-
-func SessionCacheStreamInterceptor(serverCtx context.Context) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		// Start with the original stream context
-		ctx := ss.Context()
-
-		// Propagate session cache from server context to stream context
-		if sessionCache, ok := serverCtx.Value(types.SessionCacheKey{}).(types.SessionCache); ok {
-			ctx = context.WithValue(ctx, types.SessionCacheKey{}, sessionCache)
-		}
-
-		// Create a wrapped stream that handles both session cache and annotation extraction
-		wrappedStream := &sessionCacheServerStream{
-			ServerStream: ss,
-			ctx:          ctx,
-		}
-
-		return handler(srv, wrappedStream)
-	}
-}
-
-type sessionCacheServerStream struct {
-	grpc.ServerStream
-	ctx context.Context
-}
-
-func (s *sessionCacheServerStream) Context() context.Context {
-	return s.ctx
-}
-
-func (s *sessionCacheServerStream) RecvMsg(m interface{}) error {
-	err := s.ServerStream.RecvMsg(m)
-	if err != nil {
-		return err
-	}
-	s.ctx = ContextWithSyncID(s.ctx, m)
-	return nil
-}
-
 // StreamServerInterceptors returns a slice of interceptors that includes the default interceptors,
-// plus any interceptors passed in as arguments.
+// plus any interceptors passed in as arguments. Recovery sits below ctxtags
+// and logging for the reasons recorded on UnaryServerInterceptor.
 func StreamServerInterceptors(ctx context.Context, interceptors ...grpc.StreamServerInterceptor) []grpc.StreamServerInterceptor {
 	rv := []grpc.StreamServerInterceptor{
 		grpc_ctxtags.StreamServerInterceptor(),
 		LoggingStreamServerInterceptor(ctxzap.Extract(ctx)),
 		grpc_recovery.StreamServerInterceptor(grpc_recovery.WithRecoveryHandlerContext(recoveryHandler)),
 		grpc_validator.StreamServerInterceptor(),
-		SessionCacheStreamInterceptor(ctx),
 	}
 
 	rv = append(rv, interceptors...)
@@ -102,54 +45,74 @@ func StreamServerInterceptors(ctx context.Context, interceptors ...grpc.StreamSe
 
 // UnaryServerInterceptor returns a slice of interceptors that includes the default interceptors,
 // plus any interceptors that were passed in.
+//
+// Recovery deliberately sits below ctxtags and logging rather than outermost
+// the way the lambda chain places it. Everything with real panic surface —
+// the validator, the caller's interceptors, and the connector method — is
+// below recovery in both arrangements, while the two interceptors above it
+// are small fixed middleware. Staying inside logging buys two things for a
+// recovered panic: RecoveredPanicError extracts the request-scoped ctxzap
+// logger, so the panic record carries the call's fields, and the access-log
+// line above still fires with codes.Internal instead of being unwound past.
+// The lambda chain carries no logging interceptor, so recovery-first costs
+// it nothing.
 func UnaryServerInterceptor(ctx context.Context, interceptors ...grpc.UnaryServerInterceptor) []grpc.UnaryServerInterceptor {
 	rv := []grpc.UnaryServerInterceptor{
 		grpc_ctxtags.UnaryServerInterceptor(),
 		LoggingUnaryServerInterceptor(ctxzap.Extract(ctx)),
-		grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandlerContext(recoveryHandler)),
+		RecoveryUnaryInterceptor(),
 		grpc_validator.UnaryServerInterceptor(),
-		SessionCacheUnaryInterceptor(ctx),
 	}
 
 	rv = append(rv, interceptors...)
 	return rv
 }
 
-func recoveryHandler(ctx context.Context, p interface{}) error {
-	l := ctxzap.Extract(ctx)
-	if p == nil {
-		return nil
-	}
+// RecoveryUnaryInterceptor converts a panic in a downstream interceptor or
+// handler into a codes.Internal status. Any server that hosts connector RPCs
+// needs it: an escaping panic unwinds past the transport, which surfaces it as
+// an invocation failure carrying no gRPC status at all, leaving callers unable
+// to classify the failure or locate it without the raw runtime log.
+func RecoveryUnaryInterceptor() grpc.UnaryServerInterceptor {
+	return grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandlerContext(recoveryHandler))
+}
 
-	err := status.Errorf(codes.Internal, "Internal Server Error")
-	l.Error("gRPC handler panic",
+// Recovery sites, reported as the recovery_site log field. The message stays
+// the same across sites so one query finds every recovered panic; the field is
+// what says which side of the interceptor chain it came from.
+const (
+	// RecoverySiteInterceptor is a panic the recovery interceptor caught, so it
+	// came from a handler or another interceptor below it.
+	RecoverySiteInterceptor = "interceptor"
+	// RecoverySiteLambdaHandler is a panic raised outside the lambda transport's
+	// interceptor chain, which covers config reload, log level application, and
+	// the transport's own dispatch — method lookup, metadata and timeout parsing,
+	// and request unmarshalling, since generated handlers decode before invoking
+	// the interceptor. The panic value and stack say which of those it was.
+	RecoverySiteLambdaHandler = "lambda_handler"
+)
+
+// RecoveredPanicError converts a recovered panic value into the error the caller
+// sees, logging the panic value and a stack that includes the panic site — the
+// status message is deliberately generic, so the log is the only record of what
+// happened. Recovery sites that cannot be an interceptor route through this too,
+// naming themselves with one of the RecoverySite constants, so the status code
+// and log fields stay identical across them.
+func RecoveredPanicError(ctx context.Context, p interface{}, site string) error {
+	err := status.Error(codes.Internal, "Internal Server Error")
+	ctxzap.Extract(ctx).Error("gRPC handler panic",
 		zap.Stack("stack"),
 		zap.Any("panic", p),
+		zap.String("recovery_site", site),
 		zap.Error(err),
 	)
 	return err
 }
 
-type syncIDGetter interface {
-	GetActiveSyncId() string
-}
-
-// ContextWithSyncID extracts syncID from a request annotations and adds it to the context.
-func ContextWithSyncID(ctx context.Context, req any) context.Context {
-	if ctx == nil || req == nil {
-		return ctx
-	}
-
-	var syncID string
-	syncIDGetter, ok := req.(syncIDGetter)
-	if !ok {
-		return ctx
-	}
-
-	syncID = syncIDGetter.GetActiveSyncId()
-	if syncID == "" {
-		return ctx
-	}
-
-	return context.WithValue(ctx, types.SyncIDKey{}, syncID)
+// recoveryHandler is only ever reached after a panic: grpc_recovery calls it
+// when its own completion flag says the handler did not return, so a nil value
+// here means a nil panic rather than no panic. Returning nil for that case would
+// hand the caller an empty success instead of a status.
+func recoveryHandler(ctx context.Context, p interface{}) error {
+	return RecoveredPanicError(ctx, p, RecoverySiteInterceptor)
 }
