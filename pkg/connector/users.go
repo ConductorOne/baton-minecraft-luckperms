@@ -30,11 +30,16 @@ func (o *userBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination.
 	resources := []*v2.Resource{}
 	for _, u := range users {
 		userTraitOptions := []resourceSdk.UserTraitOption{
-			resourceSdk.WithStatus(v2.UserTrait_Status_STATUS_ENABLED),
 			resourceSdk.WithUserLogin(u.Username),
 		}
 
-		userResource, err := resourceSdk.NewUserResource(u.Username, userResourceType, u.UniqueID, userTraitOptions)
+		userResource, err := resourceSdk.NewUserResource(
+			u.Username,
+			userResourceType,
+			u.UniqueID,
+			userTraitOptions,
+			resourceSdk.WithResourceStatus(v2.Status_RESOURCE_STATUS_ENABLED, ""),
+		)
 		if err != nil {
 			return nil, "", nil, err
 		}

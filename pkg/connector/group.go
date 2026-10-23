@@ -40,10 +40,13 @@ func (o *groupBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination
 		}
 		data["metadata"] = group.Metadata
 
-		groupTraitOptions := []resourceSdk.GroupTraitOption{
-			resourceSdk.WithGroupProfile(data),
-		}
-		groupResource, err := resourceSdk.NewGroupResource(group.DisplayName, groupResourceType, group.Name, groupTraitOptions)
+		groupResource, err := resourceSdk.NewGroupResource(
+			group.DisplayName,
+			groupResourceType,
+			group.Name,
+			nil,
+			resourceSdk.WithResourceProfile(data),
+		)
 		if err != nil {
 			return nil, "", nil, err
 		}
